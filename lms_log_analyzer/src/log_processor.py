@@ -17,30 +17,18 @@ from .wazuh_api import filter_logs
 logger = logging.getLogger(__name__)
 
 
-def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
-    """讀取指定的日誌檔並回傳可疑行的分析結果"""
+def analyse_lines(lines: List[str]) -> List[Dict[str, Any]]:
+    """分析多行日誌並回傳結果"""
 
-    # 依序讀取所有待處理的檔案，只保留新增的部分
-    all_new_lines: List[str] = []
-    for p in log_paths:
-        if not p.exists() or not p.is_file():
-            continue
-        # ``tail_since`` 只會取出自上次處理後的新行
-        all_new_lines.extend(tail_since(p))
-
-    if not all_new_lines:
-        save_state(STATE)
-        VECTOR_DB.save()
+    if not lines:
         return []
 
-    # 先透過 Wazuh API 篩選可疑行，減少送往 LLM 的量
-    alerts = filter_logs(all_new_lines)
+    alerts = filter_logs(lines)
     if not alerts:
         save_state(STATE)
         VECTOR_DB.save()
         return []
 
-    # 以啟發式方式為每個告警打分，僅挑選分數最高的部分送往 LLM
     scored = [(log_parser.fast_score(a["line"]), a) for a in alerts]
     scored.sort(key=lambda x: x[0], reverse=True)
     num_to_sample = max(1, int(len(scored) * config.SAMPLE_TOP_PERCENT / 100))
@@ -52,28 +40,36 @@ def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
 
     top_lines = [item["line"] for _, item in top_scored]
     top_alerts = [item["alert"] for _, item in top_scored]
-    embeddings: List[List[float]] = []
     if VECTOR_DB.index is not None:
-        # 將處理過的日誌轉成向量並存入資料庫，方便日後相似度查詢
         embeddings = [embed(line) for line in top_lines]
         VECTOR_DB.add(embeddings)
 
-    # 送交 LLM 做進一步分析
     analysis_results = llm_analyse(top_alerts)
 
-    # 將結果整理成列表，方便後續儲存或處理
     exported: List[Dict[str, Any]] = []
     for (fast_s, item), analysis in zip(top_scored, analysis_results):
-        original_line = item["line"]
         entry: Dict[str, Any] = {
-            "log": original_line,
+            "log": item["line"],
             "fast_score": fast_s,
             "analysis": analysis,
         }
         exported.append(entry)
 
-    # 儲存狀態並輸出 token 使用統計
     save_state(STATE)
     VECTOR_DB.save()
     logger.info(f"LLM stats: {COST_TRACKER.get_total_stats()}")
     return exported
+
+
+def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
+    """讀取指定的日誌檔並回傳可疑行的分析結果"""
+
+    # 依序讀取所有待處理的檔案，只保留新增的部分
+    all_new_lines: List[str] = []
+    for p in log_paths:
+        if not p.exists() or not p.is_file():
+            continue
+        # ``tail_since`` 只會取出自上次處理後的新行
+        all_new_lines.extend(tail_since(p))
+
+    return analyse_lines(all_new_lines)

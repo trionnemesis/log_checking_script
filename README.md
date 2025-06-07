@@ -14,11 +14,10 @@
 
 ## I. 系統架構 (概念流程)
 
-1. **週期性執行:** 透過 cron job (或其他排程方式) 定期觸發主程式。
-2. **日誌讀取與選擇:**
-    - 掃描指定的日誌目錄 (例如 `/var/log/LMS_LOG/`) 並選擇最新的 `.log` 檔案。
-    - 若目錄為空，會產生 `simulated_lms_activity.log` 供測試。
-    - 透過 `/tmp/lms_last_run_log_timestamp.txt` 追蹤上次處理的時間，僅讀取新增行。
+1. **Filebeat 近即時輸入:** Filebeat 監控目錄並將新增日誌以 HTTP POST 發送至 `filebeat_server.py`。
+2. **日誌讀取與選擇 (批次模式):**
+    - 仍可透過 cron job 週期性執行 `main.py` 以備份模式處理檔案。
+    - 掃描指定的日誌目錄並選擇最新 `.log` 檔，透過 `/tmp/lms_last_run_log_timestamp.txt` 追蹤處理進度。
 3. **Wazuh 告警比對:**
     - 每一行日誌會送至 Wazuh `logtest` API，比對是否觸發告警。
     - 僅留下產生告警的項目，並取得其告警 JSON 供後續處理。
@@ -48,7 +47,8 @@ lms_log_analyzer/
 │   ├── llm_handler.py
 │   ├── vector_db.py
 │   ├── utils.py
-│   └── wazuh_api.py
+│   ├── wazuh_api.py
+│   └── filebeat_server.py
 ├── data/
 └── logs/
 ```
@@ -157,6 +157,12 @@ lms_log_analyzer/
     python lms_log_analyzer/main.py
 
     ```
+
+    若要以近即時方式搭配 Filebeat，啟動以下伺服器：
+
+    ```bash
+    python -m lms_log_analyzer.src.filebeat_server
+    ```
     
 3. **腳本運作流程簡述:**
     - 腳本啟動，讀取設定。
@@ -172,6 +178,22 @@ lms_log_analyzer/
     - AI 告警: `/tmp/LMS_AI_ALERTS/LMS_AI_ALERT_YYYYMMDD.log`
     - Token 用量: `/tmp/LMS_TOKEN_USAGE/LMS_TOKEN_USAGE.log`
     - 下次執行時間戳: `/tmp/lms_last_run_log_timestamp.txt`
+
+5. **Filebeat 範例設定:** 以下是一個簡易的 Filebeat `output.http` 範例，會將日誌傳送至本程式的伺服器：
+
+    ```yaml
+    filebeat.inputs:
+      - type: log
+        paths: ["/var/log/LMS_LOG/*.log"]
+
+    output.http:
+      url: "http://localhost:9000/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      format: json
+      batch_publish: true
+    ```
 
 ---
 
@@ -257,6 +279,11 @@ lms_log_analyzer/
 ┌────────────┐
 │ Log Source │   ← 來自 LMS 系統的 .log/.gz/.bz2 檔案
 └────┬───────┘
+│            
+▼             
+┌──────────────┐
+│  Filebeat    │ ← 監控日誌並透過 HTTP 送出
+└────┬─────────┘
 │
 ▼
 ┌────────────┐

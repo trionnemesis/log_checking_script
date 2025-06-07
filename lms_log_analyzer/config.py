@@ -41,6 +41,10 @@ WAZUH_API_USER = os.getenv("WAZUH_API_USER")
 WAZUH_API_PASSWORD = os.getenv("WAZUH_API_PASSWORD")
 WAZUH_ENABLED = bool(WAZUH_API_URL and WAZUH_API_USER and WAZUH_API_PASSWORD)
 
+# Filebeat HTTP 伺服器設定
+FILEBEAT_HOST = os.getenv("FILEBEAT_HOST", "0.0.0.0")
+FILEBEAT_PORT = int(os.getenv("FILEBEAT_PORT", 9000))
+
 # 確保必要的目錄存在，避免首次執行時因目錄缺失而出錯。
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 if LMS_ANALYSIS_OUTPUT_FILE.parent != Path("/var/log"):

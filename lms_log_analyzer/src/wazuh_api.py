@@ -1,4 +1,5 @@
 from __future__ import annotations
+"""Wazuh API integration used to pre-filter log entries."""
 
 import logging
 from typing import Dict, List, Optional
@@ -9,13 +10,19 @@ from .. import config
 
 logger = logging.getLogger(__name__)
 
-_TOKEN: Optional[str] = None
+_TOKEN: Optional[str] = None  # cached authentication token
 
 
 def _authenticate() -> Optional[str]:
+    """Authenticate and return an API token."""
+
     url = f"{config.WAZUH_API_URL}/security/user/authenticate"
     try:
-        resp = requests.get(url, auth=(config.WAZUH_API_USER, config.WAZUH_API_PASSWORD), timeout=5)
+        resp = requests.get(
+            url,
+            auth=(config.WAZUH_API_USER, config.WAZUH_API_PASSWORD),
+            timeout=5,
+        )
         resp.raise_for_status()
         data = resp.json()
         return data.get("data", {}).get("token")
@@ -25,6 +32,8 @@ def _authenticate() -> Optional[str]:
 
 
 def _ensure_token() -> Optional[str]:
+    """Return a cached token, authenticating if needed."""
+
     global _TOKEN
     if _TOKEN is None:
         _TOKEN = _authenticate()
@@ -61,6 +70,8 @@ def get_alert(line: str) -> Optional[Dict[str, any]]:
 
 
 def filter_logs(lines: List[str]) -> List[Dict[str, any]]:
+    """Return list of lines that triggered a Wazuh alert."""
+
     if not config.WAZUH_ENABLED:
         return [{"line": ln, "alert": {"original_log": ln}} for ln in lines]
     suspicious: List[Dict[str, any]] = []

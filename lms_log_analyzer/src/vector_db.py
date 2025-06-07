@@ -1,4 +1,6 @@
 from __future__ import annotations
+"""Simple FAISS based vector store for log embeddings."""
+
 import hashlib
 import logging
 import os
@@ -29,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 
 def embed(text: str) -> List[float]:
+    """Return an embedding vector for ``text``.
+
+    If a sentence-transformer model is available it is used.  Otherwise a
+    deterministic pseudo-vector derived from SHA-256 is returned so unit tests
+    can run without heavy dependencies.
+    """
+
     if SENTENCE_MODEL:
         return SENTENCE_MODEL.encode(text, convert_to_numpy=True).tolist()
     digest = hashlib.sha256(text.encode('utf-8', 'replace')).digest()
@@ -40,13 +49,17 @@ def embed(text: str) -> List[float]:
 
 
 class VectorIndex:
-    def __init__(self, path: Path, dimension: int):
+    """Wrapper around a FAISS index for persistence and retrieval."""
+
+    def __init__(self, path: Path, dimension: int) -> None:
         self.path = path
         self.dimension = dimension
         self.index: Optional[faiss.Index] = None  # type: ignore
         self._load()
 
     def _load(self):
+        """Load the index from disk, creating a new one if necessary."""
+
         if faiss is None:
             logger.warning("Faiss not installed; vector search disabled")
             return
@@ -61,6 +74,8 @@ class VectorIndex:
             self.index = faiss.IndexFlatL2(self.dimension)
 
     def save(self):
+        """Persist the index to disk if possible."""
+
         if faiss and self.index is not None:
             try:
                 faiss.write_index(self.index, str(self.path))
@@ -69,6 +84,8 @@ class VectorIndex:
                 logger.error(f"Failed saving FAISS index: {e}")
 
     def search(self, vec: List[float], k: int = 5) -> Tuple[List[int], List[float]]:
+        """Search the index and return (ids, distances)."""
+
         import numpy as np
         if faiss is None or self.index is None or self.index.ntotal == 0:
             return [], []
@@ -77,6 +94,8 @@ class VectorIndex:
         return ids[0].tolist(), dists[0].tolist()
 
     def add(self, vecs: List[List[float]]):
+        """Add multiple vectors to the index."""
+
         import numpy as np
         if faiss and self.index is not None:
             to_add = np.array(vecs, dtype=np.float32)

@@ -1,4 +1,11 @@
 from __future__ import annotations
+"""Entry point of the log analyzer package.
+
+This script wires all pieces together: it locates log files, triggers
+processing and persists results.  It also configures logging so both console and
+file outputs are available.
+"""
+
 import logging
 import json
 from pathlib import Path
@@ -9,7 +16,8 @@ from .src.log_processor import process_logs
 from .src.utils import logger, save_state, STATE
 from .src.vector_db import VECTOR_DB
 
-# Configure logging
+# Configure logging early so all modules share the same handlers.  By default we
+# log to STDOUT and to a file if permissions allow.
 log_handlers: List[logging.Handler] = [logging.StreamHandler()]
 try:
     file_handler = logging.FileHandler(config.LMS_OPERATIONAL_LOG_FILE, encoding="utf-8")
@@ -25,8 +33,11 @@ logging.basicConfig(
 
 
 def main():
+    """Locate log files and run the processing pipeline."""
     log_paths: List[Path] = []
     if config.LMS_TARGET_LOG_DIR.exists() and config.LMS_TARGET_LOG_DIR.is_dir():
+        # Collect all supported log files from the directory.  Compressed logs
+        # with ``.gz`` or ``.bz2`` are also handled transparently.
         for p in config.LMS_TARGET_LOG_DIR.iterdir():
             if p.is_file() and p.suffix.lower() in [".log", ".gz", ".bz2"]:
                 log_paths.append(p)
@@ -34,6 +45,7 @@ def main():
         logger.info(f"No log files found in {config.LMS_TARGET_LOG_DIR}")
         return
 
+    # Delegate actual processing to the log_processor module.
     results = process_logs(log_paths)
     if results:
         try:
@@ -42,6 +54,7 @@ def main():
         except PermissionError:
             logger.error(f"Cannot write analysis output to {config.LMS_ANALYSIS_OUTPUT_FILE}")
 
+    # Persist state and vector index after every run.
     save_state(STATE)
     VECTOR_DB.save()
 

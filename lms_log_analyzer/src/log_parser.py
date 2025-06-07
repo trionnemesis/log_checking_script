@@ -1,4 +1,6 @@
 from __future__ import annotations
+"""Parsing helpers and a lightweight heuristic scorer for log lines."""
+
 from typing import List
 
 SUSPICIOUS_KEYWORDS = [
@@ -14,6 +16,8 @@ SUSPICIOUS_KEYWORDS = [
 
 
 def parse_status(line: str) -> int:
+    """Extract the HTTP status code from a combined log line."""
+
     try:
         parts = line.split("\"")
         if len(parts) > 2:
@@ -25,6 +29,8 @@ def parse_status(line: str) -> int:
 
 
 def response_time(line: str) -> float:
+    """Return the numeric response time if present in the line."""
+
     if "resp_time:" in line:
         try:
             val_str = line.split("resp_time:")[1].split()[0].split("\"")[0]
@@ -35,6 +41,8 @@ def response_time(line: str) -> float:
 
 
 def fast_score(line: str) -> float:
+    """Heuristically score a log line between 0 and 1."""
+
     score = 0.0
     status = parse_status(line)
     if not 200 <= status < 400 and status != 0:

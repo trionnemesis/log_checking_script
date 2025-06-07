@@ -1,4 +1,6 @@
 from __future__ import annotations
+"""Utility helpers for state management, file handling and caching."""
+
 import bz2
 import gzip
 import io
@@ -19,6 +21,8 @@ STATE: FileState = {}
 
 
 def load_state() -> FileState:
+    """Load persisted file offsets from disk."""
+
     if config.LOG_STATE_FILE.exists():
         try:
             state = json.loads(config.LOG_STATE_FILE.read_text(encoding="utf-8"))
@@ -30,6 +34,8 @@ def load_state() -> FileState:
 
 
 def save_state(state: FileState):
+    """Persist file offsets so the next run knows where to continue."""
+
     try:
         config.LOG_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
         logger.info(f"Saved state to {config.LOG_STATE_FILE}")
@@ -42,17 +48,21 @@ STATE = load_state()
 
 # ----- Helpers -----
 class LRUCache(OrderedDict):
-    def __init__(self, capacity: int):
+    """Simple least-recently-used cache for memoizing results."""
+
+    def __init__(self, capacity: int) -> None:
         super().__init__()
         self.capacity = capacity
 
     def get(self, key: Any) -> Any:
+        """Retrieve ``key`` or ``None`` if not cached."""
         if key in self:
             self.move_to_end(key)
             return self[key]
         return None
 
-    def put(self, key: Any, value: Any):
+    def put(self, key: Any, value: Any) -> None:
+        """Store ``key`` with ``value``, evicting the oldest entry when full."""
         if key in self:
             self.move_to_end(key)
         self[key] = value
@@ -64,6 +74,8 @@ CACHE = LRUCache(config.CACHE_SIZE)
 
 
 def open_log(path: Path) -> io.BufferedReader:
+    """Open plain or compressed log file for reading as bytes."""
+
     if path.suffix == ".gz":
         return gzip.open(path, "rb")  # type: ignore
     if path.suffix == ".bz2":
@@ -72,6 +84,8 @@ def open_log(path: Path) -> io.BufferedReader:
 
 
 def tail_since(path: Path) -> List[str]:
+    """Read and return new lines since last offset for ``path``."""
+
     try:
         inode = path.stat().st_ino
     except FileNotFoundError:
@@ -100,5 +114,6 @@ def tail_since(path: Path) -> List[str]:
         logger.error(f"Failed reading {path}: {e}")
         return []
 
+    # Persist new offset so subsequent runs only process appended data
     STATE[file_key] = stored
     return new_lines

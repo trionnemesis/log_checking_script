@@ -3,6 +3,13 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+"""LLM interaction utilities used by the log processing pipeline.
+
+This module wraps the Gemini model via LangChain, handles caching of responses
+and keeps track of estimated costs.  ``llm_analyse`` is the primary entry point
+invoked by :mod:`log_processor`.
+"""
+
 from .. import config
 from .utils import CACHE
 
@@ -54,7 +61,11 @@ else:
 
 
 class LLMCostTracker:
-    def __init__(self):
+    """Track token usage and approximate cost for the LLM calls."""
+
+    def __init__(self) -> None:
+        # Counters are kept per hour and in total so operators can enforce
+        # spending limits while also monitoring long term usage.
         self.in_tokens_hourly = 0
         self.out_tokens_hourly = 0
         self.cost_hourly = 0.0
@@ -63,10 +74,13 @@ class LLMCostTracker:
         self.total_cost = 0.0
 
     def add_usage(self, in_tok: int, out_tok: int):
+        """Record a batch of token usage."""
+
         self.in_tokens_hourly += in_tok
         self.out_tokens_hourly += out_tok
-        current_cost = (in_tok / 1000 * config.PRICE_IN_PER_1K_TOKENS) + (
-            out_tok / 1000 * config.PRICE_OUT_PER_1K_TOKENS
+        current_cost = (
+            in_tok / 1000 * config.PRICE_IN_PER_1K_TOKENS
+            + out_tok / 1000 * config.PRICE_OUT_PER_1K_TOKENS
         )
         self.cost_hourly += current_cost
         self.total_in_tokens += in_tok
@@ -74,9 +88,11 @@ class LLMCostTracker:
         self.total_cost += current_cost
 
     def get_hourly_cost(self) -> float:
+        """Return the accumulated cost in the current hour."""
         return self.cost_hourly
 
     def get_total_stats(self) -> dict:
+        """Return a dictionary summarizing total usage across runs."""
         return {
             "total_input_tokens": self.total_in_tokens,
             "total_output_tokens": self.total_out_tokens,
@@ -88,6 +104,13 @@ COST_TRACKER = LLMCostTracker()
 
 
 def llm_analyse(alerts: List[Dict[str, Any]]) -> List[Optional[dict]]:
+    """Analyse alerts with the LLM and return parsed JSON results.
+
+    Cached results will be reused to save cost.  When the LLM is disabled or the
+    hourly budget has been exceeded, placeholder results are produced instead of
+    making API calls.
+    """
+
     if not LLM_CHAIN:
         logger.warning("LLM disabled")
         return [None] * len(alerts)

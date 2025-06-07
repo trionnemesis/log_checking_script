@@ -1,4 +1,6 @@
 from __future__ import annotations
+"""Core logic for reading, scoring and analysing log files."""
+
 import json
 import logging
 from pathlib import Path
@@ -15,10 +17,13 @@ logger = logging.getLogger(__name__)
 
 
 def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
+    """Read given log files and return analysis results for suspicious lines."""
+
     all_new_lines: List[str] = []
     for p in log_paths:
         if not p.exists() or not p.is_file():
             continue
+        # ``tail_since`` only returns new lines since the last run
         all_new_lines.extend(tail_since(p))
 
     if not all_new_lines:
@@ -26,12 +31,15 @@ def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
         VECTOR_DB.save()
         return []
 
+    # Use Wazuh API to pre-filter lines, reducing LLM usage
     alerts = filter_logs(all_new_lines)
     if not alerts:
         save_state(STATE)
         VECTOR_DB.save()
         return []
 
+    # Score each alert heuristically so we only send the most interesting ones
+    # to the LLM.
     scored = [(log_parser.fast_score(a["line"]), a) for a in alerts]
     scored.sort(key=lambda x: x[0], reverse=True)
     num_to_sample = max(1, int(len(scored) * config.SAMPLE_TOP_PERCENT / 100))
@@ -45,11 +53,14 @@ def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
     top_alerts = [item["alert"] for _, item in top_scored]
     embeddings: List[List[float]] = []
     if VECTOR_DB.index is not None:
+        # Keep track of processed log lines in the vector store to allow future
+        # similarity searches.
         embeddings = [embed(line) for line in top_lines]
         VECTOR_DB.add(embeddings)
 
     analysis_results = llm_analyse(top_alerts)
 
+    # Bundle results together for persistence or further processing
     exported: List[Dict[str, Any]] = []
     for (fast_s, item), analysis in zip(top_scored, analysis_results):
         original_line = item["line"]
@@ -60,6 +71,7 @@ def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
         }
         exported.append(entry)
 
+    # Persist updated state and print token usage for visibility
     save_state(STATE)
     VECTOR_DB.save()
     logger.info(f"LLM stats: {COST_TRACKER.get_total_stats()}")

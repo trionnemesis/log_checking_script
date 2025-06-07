@@ -3,12 +3,11 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-"""LLM interaction utilities used by the log processing pipeline.
+"""LLM 互動工具
 
-This module wraps the Gemini model via LangChain, handles caching of responses
-and keeps track of estimated costs.  ``llm_analyse`` is the primary entry point
-invoked by :mod:`log_processor`.
-"""
+此模組封裝 Gemini 模型與 LangChain 的整合，負責快取回應、
+追蹤 Token 使用成本，並提供 ``llm_analyse`` 供 :mod:`log_processor`
+ 呼叫。"""
 
 from .. import config
 from .utils import CACHE
@@ -22,6 +21,7 @@ except ImportError:  # pragma: no cover - optional
     PromptTemplate = None
     Runnable = None
 
+# 模組記錄器，提供除錯與成本追蹤資訊
 logger = logging.getLogger(__name__)
 
 LLM_CHAIN: Optional[Runnable] = None
@@ -61,11 +61,10 @@ else:
 
 
 class LLMCostTracker:
-    """Track token usage and approximate cost for the LLM calls."""
+    """追蹤 LLM Token 使用量與費用的輔助類別"""
 
     def __init__(self) -> None:
-        # Counters are kept per hour and in total so operators can enforce
-        # spending limits while also monitoring long term usage.
+        # 以小時計算與累積總量，便於限制費用並觀察長期趨勢
         self.in_tokens_hourly = 0
         self.out_tokens_hourly = 0
         self.cost_hourly = 0.0
@@ -74,7 +73,7 @@ class LLMCostTracker:
         self.total_cost = 0.0
 
     def add_usage(self, in_tok: int, out_tok: int):
-        """Record a batch of token usage."""
+        """記錄一次呼叫的 Token 數量"""
 
         self.in_tokens_hourly += in_tok
         self.out_tokens_hourly += out_tok
@@ -88,11 +87,11 @@ class LLMCostTracker:
         self.total_cost += current_cost
 
     def get_hourly_cost(self) -> float:
-        """Return the accumulated cost in the current hour."""
+        """取得本小時累積費用"""
         return self.cost_hourly
 
     def get_total_stats(self) -> dict:
-        """Return a dictionary summarizing total usage across runs."""
+        """回傳跨執行期間的總體使用統計"""
         return {
             "total_input_tokens": self.total_in_tokens,
             "total_output_tokens": self.total_out_tokens,
@@ -104,17 +103,17 @@ COST_TRACKER = LLMCostTracker()
 
 
 def llm_analyse(alerts: List[Dict[str, Any]]) -> List[Optional[dict]]:
-    """Analyse alerts with the LLM and return parsed JSON results.
+    """使用 LLM 分析告警並回傳 JSON 結果
 
-    Cached results will be reused to save cost.  When the LLM is disabled or the
-    hourly budget has been exceeded, placeholder results are produced instead of
-    making API calls.
+    若同一筆資料先前已分析過，將從快取取得結果以節省費用；
+    當 LLM 停用或超過本小時預算時，會回傳預設結果而不呼叫 API。
     """
 
     if not LLM_CHAIN:
         logger.warning("LLM disabled")
         return [None] * len(alerts)
 
+    # 預先建立結果陣列與要查詢的索引
     results: List[Optional[dict]] = [None] * len(alerts)
     indices_to_query: List[int] = []
     batch_inputs: List[Dict[str, str]] = []
@@ -123,15 +122,18 @@ def llm_analyse(alerts: List[Dict[str, Any]]) -> List[Optional[dict]]:
         alert_json = json.dumps(alert, ensure_ascii=False, sort_keys=True)
         cached = CACHE.get(alert_json)
         if cached is not None:
+            # 若已在快取中，直接使用
             results[idx] = cached
         else:
             indices_to_query.append(idx)
             batch_inputs.append({"alert_json": alert_json})
 
     if not batch_inputs:
+        # 全部都有快取，不需再呼叫 LLM
         return results
 
     if COST_TRACKER.get_hourly_cost() >= config.MAX_HOURLY_COST_USD:
+        # 目前累積費用已達上限，不再呼叫 LLM
         logger.warning("LLM cost limit reached; skipping analysis")
         for i in indices_to_query:
             results[i] = {
@@ -143,6 +145,7 @@ def llm_analyse(alerts: List[Dict[str, Any]]) -> List[Optional[dict]]:
         return results
 
     try:
+        # 一次批次送出請求，並限制最大並行數
         responses = LLM_CHAIN.batch(batch_inputs, config={"max_concurrency": 5})  # type: ignore
         total_in = 0
         total_out = 0
@@ -152,6 +155,7 @@ def llm_analyse(alerts: List[Dict[str, Any]]) -> List[Optional[dict]]:
             alert_json = json.dumps(alerts[orig_idx], ensure_ascii=False, sort_keys=True)
             try:
                 parsed = json.loads(text)
+                # 成功解析則寫入結果並更新快取
                 results[orig_idx] = parsed
                 CACHE.put(alert_json, parsed)
                 total_in += len(PROMPT.format(alert_json=alert_json).split())  # type: ignore
@@ -164,8 +168,10 @@ def llm_analyse(alerts: List[Dict[str, Any]]) -> List[Optional[dict]]:
                     "reason": str(e),
                     "severity": "Medium",
                 }
+        # 紀錄本次批次的 Token 使用量
         COST_TRACKER.add_usage(total_in, total_out)
     except Exception as e:  # pragma: no cover - optional
+        # API 呼叫失敗，回傳錯誤資訊
         logger.error(f"LLM batch call failed: {e}")
         for i in indices_to_query:
             results[i] = {

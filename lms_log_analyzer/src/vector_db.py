@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Simple FAISS based vector store for log embeddings."""
+"""簡易的 FAISS 向量儲存，供日誌嵌入使用"""
 
 import hashlib
 import logging
@@ -31,11 +31,10 @@ logger = logging.getLogger(__name__)
 
 
 def embed(text: str) -> List[float]:
-    """Return an embedding vector for ``text``.
+    """取得文字的向量表示
 
-    If a sentence-transformer model is available it is used.  Otherwise a
-    deterministic pseudo-vector derived from SHA-256 is returned so unit tests
-    can run without heavy dependencies.
+    若系統已安裝 `sentence-transformers` 會直接產生真正的嵌入；
+    否則使用 SHA-256 雜湊計算出假向量，方便在無依賴環境下測試。
     """
 
     if SENTENCE_MODEL:
@@ -49,7 +48,7 @@ def embed(text: str) -> List[float]:
 
 
 class VectorIndex:
-    """Wrapper around a FAISS index for persistence and retrieval."""
+    """封裝 FAISS Index，負責載入、儲存與查詢"""
 
     def __init__(self, path: Path, dimension: int) -> None:
         self.path = path
@@ -58,7 +57,7 @@ class VectorIndex:
         self._load()
 
     def _load(self):
-        """Load the index from disk, creating a new one if necessary."""
+        """讀取既有索引檔，如無則建立新索引"""
 
         if faiss is None:
             logger.warning("Faiss not installed; vector search disabled")
@@ -74,7 +73,7 @@ class VectorIndex:
             self.index = faiss.IndexFlatL2(self.dimension)
 
     def save(self):
-        """Persist the index to disk if possible."""
+        """將索引寫入磁碟"""
 
         if faiss and self.index is not None:
             try:
@@ -84,7 +83,7 @@ class VectorIndex:
                 logger.error(f"Failed saving FAISS index: {e}")
 
     def search(self, vec: List[float], k: int = 5) -> Tuple[List[int], List[float]]:
-        """Search the index and return (ids, distances)."""
+        """在索引中搜尋並回傳 (ids, 距離)"""
 
         import numpy as np
         if faiss is None or self.index is None or self.index.ntotal == 0:
@@ -94,7 +93,7 @@ class VectorIndex:
         return ids[0].tolist(), dists[0].tolist()
 
     def add(self, vecs: List[List[float]]):
-        """Add multiple vectors to the index."""
+        """新增多個向量至索引"""
 
         import numpy as np
         if faiss and self.index is not None:

@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Utility helpers for state management, file handling and caching."""
+"""工具函式，提供狀態管理、檔案處理與快取功能"""
 
 import bz2
 import gzip
@@ -14,14 +14,15 @@ from .. import config
 
 logger = logging.getLogger(__name__)
 
-# ----- File state management -----
+# ----- 檔案狀態管理 -----
+# 以檔名（完整路徑）為鍵，紀錄 inode 與已讀取的位移量
 FileState = Dict[str, Dict[str, Any]]
 
 STATE: FileState = {}
 
 
 def load_state() -> FileState:
-    """Load persisted file offsets from disk."""
+    """從磁碟讀取先前儲存的檔案位移資訊"""
 
     if config.LOG_STATE_FILE.exists():
         try:
@@ -34,7 +35,7 @@ def load_state() -> FileState:
 
 
 def save_state(state: FileState):
-    """Persist file offsets so the next run knows where to continue."""
+    """將檔案位移資訊寫入磁碟，供下次執行接續使用"""
 
     try:
         config.LOG_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -48,21 +49,21 @@ STATE = load_state()
 
 # ----- Helpers -----
 class LRUCache(OrderedDict):
-    """Simple least-recently-used cache for memoizing results."""
+    """簡易 LRU 快取，用來記憶化函式輸出"""
 
     def __init__(self, capacity: int) -> None:
         super().__init__()
         self.capacity = capacity
 
     def get(self, key: Any) -> Any:
-        """Retrieve ``key`` or ``None`` if not cached."""
+        """取得快取值，若不存在則回傳 ``None``"""
         if key in self:
             self.move_to_end(key)
             return self[key]
         return None
 
     def put(self, key: Any, value: Any) -> None:
-        """Store ``key`` with ``value``, evicting the oldest entry when full."""
+        """放入快取，若超過容量則淘汰最舊的項目"""
         if key in self:
             self.move_to_end(key)
         self[key] = value
@@ -74,7 +75,7 @@ CACHE = LRUCache(config.CACHE_SIZE)
 
 
 def open_log(path: Path) -> io.BufferedReader:
-    """Open plain or compressed log file for reading as bytes."""
+    """開啟一般或壓縮的日誌檔並回傳檔案物件"""
 
     if path.suffix == ".gz":
         return gzip.open(path, "rb")  # type: ignore
@@ -84,11 +85,12 @@ def open_log(path: Path) -> io.BufferedReader:
 
 
 def tail_since(path: Path) -> List[str]:
-    """Read and return new lines since last offset for ``path``."""
+    """讀取自上次記錄後新增的日誌行"""
 
     try:
         inode = path.stat().st_ino
     except FileNotFoundError:
+        # 檔案可能在期間被刪除或輪替
         logger.warning(f"Log file {path} disappeared")
         return []
 
@@ -96,6 +98,7 @@ def tail_since(path: Path) -> List[str]:
     stored = STATE.get(file_key, {"inode": inode, "offset": 0})
 
     if stored["inode"] != inode:
+        # inode 改變代表日誌被輪替，從頭開始讀取
         logger.info(f"{path} rotated. Restart reading")
         stored = {"inode": inode, "offset": 0}
 
@@ -105,8 +108,10 @@ def tail_since(path: Path) -> List[str]:
             f.seek(stored["offset"])
             for line_bytes in f:
                 try:
+                    # 直接解碼為 UTF-8
                     new_lines.append(line_bytes.decode("utf-8").rstrip())
                 except UnicodeDecodeError:
+                    # 若遇到非法字元則以替換模式解碼
                     decoded = line_bytes.decode("utf-8", "replace").rstrip()
                     new_lines.append(decoded)
             stored["offset"] = f.tell()
@@ -114,6 +119,6 @@ def tail_since(path: Path) -> List[str]:
         logger.error(f"Failed reading {path}: {e}")
         return []
 
-    # Persist new offset so subsequent runs only process appended data
+    # 更新偏移量，後續執行只讀取新增資料
     STATE[file_key] = stored
     return new_lines

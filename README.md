@@ -14,28 +14,24 @@
 
 ## I. 系統架構 (概念流程)
 
-1. **週期性執行:** 透過 cron job (或其他排程方式) 每小時觸發一次腳本。
+1. **週期性執行:** 透過 cron job (或其他排程方式) 定期觸發主程式。
 2. **日誌讀取與選擇:**
-    - 掃描指定的日誌目錄 (例如 `/var/log/LMS_LOG/`)。
-    - 找到其中最新修改的 `.log` 檔案作為當前處理目標。
-    - 若無 `.log` 檔案，則會嘗試在該目錄下產生一個模擬日誌檔 (`simulated_lms_activity.log`) 供測試。
-    - 使用時間戳檔案 (`/tmp/lms_last_run_log_timestamp.txt`) 記錄上次處理到的日誌行時間，以實現增量處理。
-3. **初步過濾:**
-    - **解析器 (Parser):** 解析每一行日誌。
-    - **啟發式規則 (Heuristics):** 根據預設規則 (如非 2xx/3xx 狀態碼、過長的回應時間、可疑關鍵字等) 快速篩選。
-4. **向量搜尋 (模擬):**
-    - 通過啟發式規則的日誌，會進行模擬的攻擊向量和正常向量比對。
-    - **Attack-vec search:** 若與攻擊向量相似度高於閾值，標記為可疑。
-    - **Normal-vec search:** 若與正常向量相似度低於閾值，也標記為可疑。
-    - 若兩者皆未命中，則丟棄。
-5. **LLM 深度分析 (Gemini via LangChain):**
-    - 被標記為可疑的樣本列表，會透過 LangChain 框架提交給 Gemini 模型進行分析。
-    - Gemini 回傳 JSON 格式的分析結果 (是否攻擊、攻擊類型、原因、嚴重性)。
-6. **結果記錄與通知:**
-    - **AI 告警日誌:** Gemini 的分析結果、Token 消耗、費用等資訊記錄到 `/tmp/LMS_AI_ALERTS/LMS_AI_ALERT_YYYYMMDD.log`。
-    - **Token 使用日誌:** API Token 使用量記錄到 `/tmp/LMS_TOKEN_USAGE/LMS_TOKEN_USAGE.log`。
-    - **成本控制:** 若 API 累計費用超過設定上限 (預設 5 USD)，則停止呼叫 Gemini 並記錄。
-    - **郵件通知 (模擬):** 對於偵測到的告警或費用超限情況，模擬發送郵件。
+    - 掃描指定的日誌目錄 (例如 `/var/log/LMS_LOG/`) 並選擇最新的 `.log` 檔案。
+    - 若目錄為空，會產生 `simulated_lms_activity.log` 供測試。
+    - 透過 `/tmp/lms_last_run_log_timestamp.txt` 追蹤上次處理的時間，僅讀取新增行。
+3. **Wazuh 告警比對:**
+    - 每一行日誌會送至 Wazuh `logtest` API，比對是否觸發告警。
+    - 僅留下產生告警的項目，並取得其告警 JSON 供後續處理。
+4. **啟發式評分與取樣:**
+    - 對告警行以 `fast_score()` 進行快速評分，挑選最高分的前 `SAMPLE_TOP_PERCENT`% 作為候選。
+5. **向量嵌入與歷史比對:**
+    - 將候選日誌轉為向量並寫入 FAISS 索引，以便日後搜尋相似模式。
+6. **LLM 深度分析 (Gemini via LangChain):**
+    - 把取得的 Wazuh 告警 JSON 傳給 `llm_analyse()`，利用 Gemini 分析是否為攻擊行為並回傳結構化結果。
+7. **結果記錄與通知:**
+    - **AI 告警日誌:** 存放分析結果與 Token 消耗等資訊於 `/tmp/LMS_AI_ALERTS/LMS_AI_ALERT_YYYYMMDD.log`。
+    - **Token 使用日誌:** 記錄至 `/tmp/LMS_TOKEN_USAGE/LMS_TOKEN_USAGE.log`，並在費用超過上限時停止呼叫。
+    - **郵件通知 (模擬):** 對偵測到的告警或費用超限情況模擬發信提醒。
 
 ---
 
@@ -270,6 +266,12 @@ lms_log_analyzer/
 │
 ▼
 ┌──────────────┐
+│ Wazuh Filter │ ← 調用 Wazuh logtest 檢查是否產生告警
+│ filter_logs()│
+└────┬─────────┘
+│
+▼
+┌──────────────┐
 │ Fast Scorer  │ ← 啟發式快速評分
 │ fast_score() │
 └────┬─────────┘
@@ -286,7 +288,7 @@ lms_log_analyzer/
 ▼
 ┌────────────────────┐
 │ Gemini LLM (Langchain) │ ← 分析是否為攻擊行為
-│ LLM_CHAIN.batch()      │
+│ llm_analyse()          │
 └────────┬──────────────┘
 │
 ▼

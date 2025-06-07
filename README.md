@@ -39,6 +39,24 @@
 
 ---
 
+## 專案目錄結構
+
+```text
+lms_log_analyzer/
+├── main.py
+├── config.py
+├── requirements.txt
+├── src/
+│   ├── log_processor.py
+│   ├── log_parser.py
+│   ├── llm_handler.py
+│   ├── vector_db.py
+│   ├── utils.py
+│   └── wazuh_api.py
+├── data/
+└── logs/
+```
+
 ## II. 建議安裝環境
 
 - **作業系統 (Operating System):**
@@ -98,49 +116,19 @@
     - 在已啟動的虛擬環境中，執行以下指令安裝必要的 Python 函式庫：
         
         ```bash
-        pip install langchain langchain-google-genai google-api-python-client
-        
+        pip install -r lms_log_analyzer/requirements.txt
         ```
         
     - **套件說明:**
         - `langchain`: LangChain 核心函式庫，提供與 LLM 互動的框架。
         - `langchain-google-genai`: LangChain 專用於整合 Google Generative AI (包括 Gemini 模型) 的套件。
         - `google-api-python-client`: Google API 的 Python 客戶端函式庫，`langchain-google-genai` 可能會依賴它。
-4. **取得並設定腳本:**
-    - 將提供的 Python 腳本儲存為一個 `.py` 檔案 (例如：`lms_log_analyzer.py`)。
+4. **取得並設定程式:**
+    - 下載或 clone 此專案，確保 `lms_log_analyzer` 目錄與上方目錄結構相符。
     - **設定 API 金鑰:**
-        - **建議方式 (環境變數):** 在您的終端機設定環境變數 `GEMINI_API_KEY`。
-        (若要永久生效，請將此行加入您的 shell 設定檔，如 `.bashrc`, `.zshrc` 等)
-            
-            ```bash
-            export GEMINI_API_KEY="YOUR_API_KEY_HERE"
-            
-            ```
-            
-        - **腳本內提示輸入:** 如果未設定環境變數，腳本在執行時會提示您輸入 API 金鑰。
-        - **直接寫入腳本 (不建議用於生產環境):** 您也可以直接在腳本中修改 `GEMINI_API_KEY = "YOUR_API_KEY_HERE"`，但請注意安全風險。
-    - **檢查並調整腳本內的「配置設定 (Configurable Settings)」部分:**
-        
-        ```python
-        # --- 配置設定 (Configurable Settings) ---
-        SIM_T_ATTACK_THRESHOLD = 0.8
-        SIM_N_NORMAL_THRESHOLD = 0.6
-        GEMINI_API_CALL_ENABLED = True
-        GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") # 金鑰設定點
-        
-        MAX_HOURLY_COST_USD = 5.0
-        LOG_DIRECTORY = "/var/log/LMS_LOG/" # 主要日誌目錄
-        MOCK_LOG_FILENAME_IN_DIR = "simulated_lms_activity.log" # 若目錄為空，產生的模擬檔名
-        
-        AI_ALERT_LOG_DIR = "/tmp/LMS_AI_ALERTS/" # AI 告警日誌存放目錄
-        TOKEN_USAGE_LOG_DIR = "/tmp/LMS_TOKEN_USAGE/" # Token 使用量日誌存放目錄
-        LAST_RUN_TIMESTAMP_FILE = "/tmp/lms_last_run_log_timestamp.txt" # 上次執行時間戳檔案
-        # ... 其他設定 ...
-        
-        ```
-        
-        - 確認 `LOG_DIRECTORY` 指向您正確的日誌來源目錄。
-        - `AI_ALERT_LOG_DIR`, `TOKEN_USAGE_LOG_DIR`, `LAST_RUN_TIMESTAMP_FILE` 預設使用 `/tmp/` 路徑，通常有較好的權限相容性。若需更改，請確保執行腳本的使用者對新路徑有寫入權限。
+        - 建議在環境變數 `GEMINI_API_KEY` 中指定，避免將金鑰寫死在程式碼中。
+    - **調整設定值:**
+        - 所有設定集中於 `lms_log_analyzer/config.py`，也可透過對應環境變數覆寫，如 `LMS_TARGET_LOG_DIR` 等。
 5. **目錄與檔案權限 (Directory & File Permissions):**
     - **讀取日誌:** 執行腳本的使用者必須擁有對 `LOG_DIRECTORY` 及其內部日誌檔案的**讀取**權限。
         
@@ -167,12 +155,11 @@
     
     ```
     
-2. **執行腳本:**
-(將 `lms_log_analyzer.py` 替換為您儲存腳本的實際檔名)
-    
+2. **執行程式:**
+
     ```bash
-    python lms_log_analyzer.py
-    
+    python lms_log_analyzer/main.py
+
     ```
     
 3. **腳本運作流程簡述:**
@@ -194,19 +181,14 @@
 
 ## V. 腳本設定詳解 (Configurable Settings)
 
-在 Python 腳本的開頭，「配置設定」區域包含以下重要變數，您可以根據需求調整：
+所有可自訂的參數都集中在 `lms_log_analyzer/config.py` 中，也可透過環境變數覆寫。
+常見的設定包含：
 
-- `SIM_T_ATTACK_THRESHOLD = 0.8`: 攻擊向量搜尋的相似度閾值，高於此值視為潛在攻擊。
-- `SIM_N_NORMAL_THRESHOLD = 0.6`: 正常向量搜尋的相似度閾值，*低於*此值視為行為異常。
-- `GEMINI_API_CALL_ENABLED = True`: 是否真的呼叫 Gemini API。設為 `False` 可在不產生費用的情況下測試腳本的其他部分邏輯 (API 呼叫會被模擬)。
-- `GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")`: Gemini API 金鑰。優先從環境變數讀取。
-- `MAX_HOURLY_COST_USD = 5.0`: 每小時 Gemini API 呼叫的費用上限 (美元)。達到此上限後，腳本將在本小時內停止呼叫 API。
-- `LOG_DIRECTORY = "/var/log/LMS_LOG/"`: 指定存放原始日誌檔案的目錄。腳本會掃描此目錄下的 `.log` 檔案。
-- `MOCK_LOG_FILENAME_IN_DIR = "simulated_lms_activity.log"`: 如果 `LOG_DIRECTORY` 中沒有找到任何 `.log` 檔案，腳本會嘗試在此目錄下創建以此命名的模擬日誌檔案。
-- `AI_ALERT_LOG_DIR = "/tmp/LMS_AI_ALERTS/"`: 存放 AI 分析告警結果的目錄。
-- `TOKEN_USAGE_LOG_DIR = "/tmp/LMS_TOKEN_USAGE/"`: 存放 API Token 使用量記錄的目錄。
-- `LAST_RUN_TIMESTAMP_FILE = "/tmp/lms_last_run_log_timestamp.txt"`: 記錄上次成功處理的日誌行時間戳的檔案路徑，用於增量處理。
-- `PRICE_PER_1000_TOKENS_INPUT` 和 `PRICE_PER_1000_TOKENS_OUTPUT`: 用於估算 Gemini API 費用的單價 (美元/千 Token)。**請參考最新的 Google Cloud 定價進行調整。**
+- `LMS_TARGET_LOG_DIR`：要掃描的日誌目錄。
+- `LMS_ANALYSIS_OUTPUT_FILE`：分析結果輸出的 JSON 路徑。
+- `CACHE_SIZE`、`SAMPLE_TOP_PERCENT`：控制快取大小與取樣比例。
+- `MAX_HOURLY_COST_USD`：每小時允許的 LLM 費用上限。
+- `GEMINI_API_KEY`：Gemini API 金鑰，可透過環境變數提供。
 
 ---
 

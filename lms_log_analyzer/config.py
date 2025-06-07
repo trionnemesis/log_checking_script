@@ -29,6 +29,12 @@ SIM_N_NORMAL_L2_THRESHOLD = float(os.getenv("LMS_SIM_N_NORMAL_L2_THRESHOLD", 0.2
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 LLM_MODEL_NAME = os.getenv("LMS_LLM_MODEL_NAME", "gemini-1.5-flash-latest")
 
+# Wazuh API settings
+WAZUH_API_URL = os.getenv("WAZUH_API_URL")
+WAZUH_API_USER = os.getenv("WAZUH_API_USER")
+WAZUH_API_PASSWORD = os.getenv("WAZUH_API_PASSWORD")
+WAZUH_ENABLED = bool(WAZUH_API_URL and WAZUH_API_USER and WAZUH_API_PASSWORD)
+
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 if LMS_ANALYSIS_OUTPUT_FILE.parent != Path("/var/log"):

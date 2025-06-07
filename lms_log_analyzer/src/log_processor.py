@@ -9,6 +9,7 @@ from . import log_parser
 from .llm_handler import llm_analyse, COST_TRACKER
 from .vector_db import VECTOR_DB, embed
 from .utils import tail_since, save_state, STATE
+from .wazuh_api import filter_logs
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,13 @@ def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
         VECTOR_DB.save()
         return []
 
-    scored = [(log_parser.fast_score(l), l) for l in all_new_lines]
+    to_check = filter_logs(all_new_lines)
+    if not to_check:
+        save_state(STATE)
+        VECTOR_DB.save()
+        return []
+
+    scored = [(log_parser.fast_score(l), l) for l in to_check]
     scored.sort(key=lambda x: x[0], reverse=True)
     num_to_sample = max(1, int(len(scored) * config.SAMPLE_TOP_PERCENT / 100))
     top_scored = [sl for sl in scored if sl[0] > 0.0][:num_to_sample]

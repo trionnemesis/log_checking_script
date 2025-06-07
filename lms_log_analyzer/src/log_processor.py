@@ -26,13 +26,13 @@ def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
         VECTOR_DB.save()
         return []
 
-    to_check = filter_logs(all_new_lines)
-    if not to_check:
+    alerts = filter_logs(all_new_lines)
+    if not alerts:
         save_state(STATE)
         VECTOR_DB.save()
         return []
 
-    scored = [(log_parser.fast_score(l), l) for l in to_check]
+    scored = [(log_parser.fast_score(a["line"]), a) for a in alerts]
     scored.sort(key=lambda x: x[0], reverse=True)
     num_to_sample = max(1, int(len(scored) * config.SAMPLE_TOP_PERCENT / 100))
     top_scored = [sl for sl in scored if sl[0] > 0.0][:num_to_sample]
@@ -41,16 +41,18 @@ def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
         VECTOR_DB.save()
         return []
 
-    top_lines = [line for _, line in top_scored]
+    top_lines = [item["line"] for _, item in top_scored]
+    top_alerts = [item["alert"] for _, item in top_scored]
     embeddings: List[List[float]] = []
     if VECTOR_DB.index is not None:
         embeddings = [embed(line) for line in top_lines]
         VECTOR_DB.add(embeddings)
 
-    analysis_results = llm_analyse(top_lines)
+    analysis_results = llm_analyse(top_alerts)
 
     exported: List[Dict[str, Any]] = []
-    for (fast_s, original_line), analysis in zip(top_scored, analysis_results):
+    for (fast_s, item), analysis in zip(top_scored, analysis_results):
+        original_line = item["line"]
         entry: Dict[str, Any] = {
             "log": original_line,
             "fast_score": fast_s,

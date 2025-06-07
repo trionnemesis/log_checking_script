@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import requests
 
@@ -31,19 +31,18 @@ def _ensure_token() -> Optional[str]:
     return _TOKEN
 
 
-def is_suspicious(line: str) -> bool:
-    """Query Wazuh logtest API to check if the log line is suspicious."""
+def get_alert(line: str) -> Optional[Dict[str, any]]:
+    """Return Wazuh alert JSON if the line triggers one."""
     if not config.WAZUH_ENABLED:
-        return False
+        return {"original_log": line}
     token = _ensure_token()
     if not token:
-        return False
+        return None
     url = f"{config.WAZUH_API_URL}/experimental/logtest"
     headers = {"Authorization": f"Bearer {token}"}
     try:
         resp = requests.post(url, headers=headers, json={"event": line}, timeout=5)
         if resp.status_code == 401:
-            # Token may be expired, retry once
             _TOKEN = _authenticate()
             if _TOKEN:
                 headers["Authorization"] = f"Bearer {_TOKEN}"
@@ -51,17 +50,22 @@ def is_suspicious(line: str) -> bool:
         resp.raise_for_status()
         data = resp.json()
         alerts = data.get("data", {}).get("alerts", [])
-        return bool(alerts)
+        if alerts:
+            alert = alerts[0]
+            alert["original_log"] = line
+            return alert
+        return None
     except Exception as e:  # pragma: no cover - optional
         logger.error(f"Wazuh API error: {e}")
-        return False
+        return None
 
 
-def filter_logs(lines: List[str]) -> List[str]:
+def filter_logs(lines: List[str]) -> List[Dict[str, any]]:
     if not config.WAZUH_ENABLED:
-        return lines
-    suspicious: List[str] = []
+        return [{"line": ln, "alert": {"original_log": ln}} for ln in lines]
+    suspicious: List[Dict[str, any]] = []
     for ln in lines:
-        if is_suspicious(ln):
-            suspicious.append(ln)
+        alert = get_alert(ln)
+        if alert:
+            suspicious.append({"line": ln, "alert": alert})
     return suspicious

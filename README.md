@@ -14,23 +14,13 @@
 
 ## I. 系統架構 (概念流程)
 
-1. **Filebeat 近即時輸入:** Filebeat 監控目錄並將新增日誌以 HTTP POST 發送至 `filebeat_server.py`。
-2. **日誌讀取與選擇 (批次模式):**
-    - 仍可透過 cron job 週期性執行 `main.py` 以備份模式處理檔案。
-    - 掃描指定的日誌目錄並選擇最新 `.log` 檔，透過 `/tmp/lms_last_run_log_timestamp.txt` 追蹤處理進度。
-3. **Wazuh 告警比對:**
-    - 每一行日誌會送至 Wazuh `logtest` API，比對是否觸發告警。
-    - 僅留下產生告警的項目，並取得其告警 JSON 供後續處理。
-4. **啟發式評分與取樣:**
-    - 對告警行以 `fast_score()` 進行快速評分，挑選最高分的前 `SAMPLE_TOP_PERCENT`% 作為候選。
-5. **向量嵌入與歷史比對:**
-    - 將候選日誌轉為向量並寫入 FAISS 索引，以便日後搜尋相似模式。
-6. **LLM 深度分析 (Gemini via LangChain):**
-    - 把取得的 Wazuh 告警 JSON 傳給 `llm_analyse()`，利用 Gemini 分析是否為攻擊行為並回傳結構化結果。
-7. **結果記錄與通知:**
-    - **AI 告警日誌:** 存放分析結果與 Token 消耗等資訊於 `/tmp/LMS_AI_ALERTS/LMS_AI_ALERT_YYYYMMDD.log`。
-    - **Token 使用日誌:** 記錄至 `/tmp/LMS_TOKEN_USAGE/LMS_TOKEN_USAGE.log`，並在費用超過上限時停止呼叫。
-    - **郵件通知 (模擬):** 對偵測到的告警或費用超限情況模擬發信提醒。
+1. **Filebeat 近即時輸入：** Filebeat 監控日誌並將新行透過 HTTP 傳送至 `filebeat_server.py`，立即觸發後續分析。
+2. **批次日誌處理：** 亦可定期執行 `main.py`，程式會根據 `data/file_state.json` 記錄的偏移量只讀取新增內容。
+3. **Wazuh 告警比對：** 每行先送至 Wazuh `logtest` API，僅保留產生告警的項目並取得告警 JSON。
+4. **啟發式評分與取樣：** 對告警行以 `fast_score()` 計算分數，挑選最高分的前 `SAMPLE_TOP_PERCENT`％ 作為候選。
+5. **向量嵌入與歷史比對：** 將候選日誌嵌入向量並寫入 FAISS 索引，以便搜尋過往相似模式。
+6. **LLM 深度分析：** 把 Wazuh 告警 JSON 傳入 `llm_analyse()` 由 Gemini 分析是否為攻擊行為並回傳結構化結果。
+7. **結果輸出與成本控制：** 將分析結果寫入 `analysis_results.json`，同時更新向量索引、狀態檔並追蹤 LLM Token 成本。
 
 ---
 
@@ -136,9 +126,7 @@ lms_log_analyzer/
         
         ```
         
-    - **寫入輸出檔案:** 執行腳本的使用者必須擁有對 `AI_ALERT_LOG_DIR`, `TOKEN_USAGE_LOG_DIR` 以及 `LAST_RUN_TIMESTAMP_FILE` 所在目錄的**寫入**權限，以便腳本可以建立和寫入這些日誌/狀態檔案。
-        - 如果這些目錄 (如 `/tmp/LMS_AI_ALERTS/`) 不存在，腳本會嘗試創建它們。
-    - **模擬日誌產生:** 如果 `LOG_DIRECTORY` 中沒有 `.log` 檔案，腳本會嘗試在 `LOG_DIRECTORY` 中創建 `MOCK_LOG_FILENAME_IN_DIR`。這種情況下，執行腳本的使用者也需要對 `LOG_DIRECTORY` 的**寫入**權限。
+    - **寫入輸出檔案:** 執行腳本的使用者需能寫入 `LMS_ANALYSIS_OUTPUT_FILE` 及 `data/` 目錄，程式才能儲存分析結果與狀態檔。
 
 ---
 
@@ -165,19 +153,14 @@ lms_log_analyzer/
     ```
     
 3. **腳本運作流程簡述:**
-    - 腳本啟動，讀取設定。
-    - 掃描 `LOG_DIRECTORY`，選取最新的 `.log` 檔案 (或產生模擬檔案)。
-    - 讀取 `LAST_RUN_TIMESTAMP_FILE` 中的時間戳。
-    - 從選定的日誌檔案中讀取並處理在該時間戳之後的新增日誌行。
-    - 進行啟發式過濾和模擬的向量搜尋。
-    - 將可疑日誌提交給 Gemini 分析。
-    - 記錄分析結果、Token 用量。
-    - 模擬發送告警郵件。
-    - 更新 `LAST_RUN_TIMESTAMP_FILE` 中的時間戳。
+    - 腳本啟動並載入 `config.py` 設定。
+    - 掃描 `LMS_TARGET_LOG_DIR` 取得最新的 `.log` 檔案。
+    - 從 `data/file_state.json` 取得先前處理的偏移量，只讀取新增的日誌行。
+    - 透過 Wazuh 檢查告警、計算啟發式分數並建立向量索引。
+    - 將產生告警的日誌交由 Gemini 分析，取得結構化結果並統計 Token 成本。
+    - 儲存分析輸出與最新偏移量，以便下次執行接續處理。
 4. **預期輸出檔案位置 (預設):**
-    - AI 告警: `/tmp/LMS_AI_ALERTS/LMS_AI_ALERT_YYYYMMDD.log`
-    - Token 用量: `/tmp/LMS_TOKEN_USAGE/LMS_TOKEN_USAGE.log`
-    - 下次執行時間戳: `/tmp/lms_last_run_log_timestamp.txt`
+    - 分析結果: `/var/log/analyzer_results.json`
 
 5. **Filebeat 範例設定:** 以下是一個簡易的 Filebeat `output.http` 範例，會將日誌傳送至本程式的伺服器：
 
@@ -258,7 +241,7 @@ lms_log_analyzer/
     - **解決:**
         - 檢查並修正相關目錄和檔案的權限 (`ls -l`, `chmod`, `chown`)。
         - 確保以擁有正確權限的使用者執行腳本。
-        - 將輸出路徑 (如 `AI_ALERT_LOG_DIR`, `LAST_RUN_TIMESTAMP_FILE`) 設定到使用者有權限寫入的位置 (如 `/tmp/` 或使用者家目錄下的子目錄)。
+        - 將 `LMS_ANALYSIS_OUTPUT_FILE` 與 `data/` 目錄等輸出路徑設置到使用者具寫入權限的位置 (如 `/tmp/` 或家目錄下的子目錄)。
 - **`[Errno 21] Is a directory`**
     - **原因:** 腳本試圖將一個目錄當作檔案來開啟。通常是因為 `LOG_DIRECTORY` 被錯誤地當作完整檔案路徑傳遞給了 `open()` 函數。
     - **解決:** 確保腳本中的路徑變數 (尤其是傳給 `open()` 的) 指向的是檔案而不是目錄。在此腳本的最新版本中，應檢查 `get_latest_log_file` 是否正確返回檔案路徑。

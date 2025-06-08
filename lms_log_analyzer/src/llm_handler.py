@@ -35,7 +35,13 @@ if config.GEMINI_API_KEY and ChatGoogleGenerativeAI and PromptTemplate:
             convert_system_message_to_human=True,
         )
         PROMPT_TEMPLATE_STR = """
-System: 你是一位資安分析助手。你將收到來自 Wazuh 的告警 JSON，請利用其中提供的事件上下文評估是否存在潛在攻擊或異常活動。
+System: 你是一位資安分析助手。你將收到來自 Wazuh 的告警 JSON，以及若干歷史案例供參考。請綜合評估是否存在潛在攻擊或異常活動。
+
+歷史案例 (JSON)：
+{examples_json}
+
+Wazuh Alert JSON:
+{alert_json}
 
 請回傳以下欄位組成的 JSON：
 - "is_attack": boolean
@@ -43,12 +49,9 @@ System: 你是一位資安分析助手。你將收到來自 Wazuh 的告警 JSON
 - "reason": string
 - "severity": string
 
-Wazuh Alert JSON:
-{alert_json}
-
 JSON Output:
 """
-        PROMPT = PromptTemplate(input_variables=["alert_json"], template=PROMPT_TEMPLATE_STR)
+        PROMPT = PromptTemplate(input_variables=["alert_json", "examples_json"], template=PROMPT_TEMPLATE_STR)
         LLM_CHAIN = PROMPT | llm  # type: ignore
         logger.info(f"LLM ({config.LLM_MODEL_NAME}) initialized")
     except Exception as e:  # pragma: no cover - optional
@@ -118,15 +121,19 @@ def llm_analyse(alerts: List[Dict[str, Any]]) -> List[Optional[dict]]:
     indices_to_query: List[int] = []
     batch_inputs: List[Dict[str, str]] = []
 
-    for idx, alert in enumerate(alerts):
+    for idx, item in enumerate(alerts):
+        alert = item.get("alert", item)
+        examples = item.get("examples", [])
         alert_json = json.dumps(alert, ensure_ascii=False, sort_keys=True)
-        cached = CACHE.get(alert_json)
+        examples_json = json.dumps(examples, ensure_ascii=False, sort_keys=True)
+        cache_key = alert_json + "|" + examples_json
+        cached = CACHE.get(cache_key)
         if cached is not None:
             # 若已在快取中，直接使用
             results[idx] = cached
         else:
             indices_to_query.append(idx)
-            batch_inputs.append({"alert_json": alert_json})
+            batch_inputs.append({"alert_json": alert_json, "examples_json": examples_json})
 
     if not batch_inputs:
         # 全部都有快取，不需再呼叫 LLM
@@ -152,13 +159,18 @@ def llm_analyse(alerts: List[Dict[str, Any]]) -> List[Optional[dict]]:
         for i, resp in enumerate(responses):
             orig_idx = indices_to_query[i]
             text = resp.content if hasattr(resp, "content") else resp
-            alert_json = json.dumps(alerts[orig_idx], ensure_ascii=False, sort_keys=True)
+            item = alerts[orig_idx]
+            alert = item.get("alert", item)
+            examples = item.get("examples", [])
+            alert_json = json.dumps(alert, ensure_ascii=False, sort_keys=True)
+            examples_json = json.dumps(examples, ensure_ascii=False, sort_keys=True)
+            cache_key = alert_json + "|" + examples_json
             try:
                 parsed = json.loads(text)
                 # 成功解析則寫入結果並更新快取
                 results[orig_idx] = parsed
-                CACHE.put(alert_json, parsed)
-                total_in += len(PROMPT.format(alert_json=alert_json).split())  # type: ignore
+                CACHE.put(cache_key, parsed)
+                total_in += len(PROMPT.format(alert_json=alert_json, examples_json=examples_json).split())  # type: ignore
                 total_out += len(text.split())
             except json.JSONDecodeError as e:
                 logger.error(f"Failed parsing LLM response: {e}")

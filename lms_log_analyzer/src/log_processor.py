@@ -40,11 +40,27 @@ def analyse_lines(lines: List[str]) -> List[Dict[str, Any]]:
 
     top_lines = [item["line"] for _, item in top_scored]
     top_alerts = [item["alert"] for _, item in top_scored]
-    if VECTOR_DB.index is not None:
-        embeddings = [embed(line) for line in top_lines]
-        VECTOR_DB.add(embeddings)
+    embeddings = [embed(line) for line in top_lines]
 
-    analysis_results = llm_analyse(top_alerts)
+    contexts = []
+    if VECTOR_DB.index is not None:
+        for emb in embeddings:
+            ids, _ = VECTOR_DB.search(emb, k=3)
+            contexts.append(VECTOR_DB.get_cases(ids))
+    else:
+        contexts = [[] for _ in embeddings]
+
+    analysis_inputs = [
+        {"alert": alert, "examples": ctx} for alert, ctx in zip(top_alerts, contexts)
+    ]
+
+    analysis_results = llm_analyse(analysis_inputs)
+
+    if VECTOR_DB.index is not None:
+        cases_to_add = []
+        for line, analysis in zip(top_lines, analysis_results):
+            cases_to_add.append({"log": line, "analysis": analysis})
+        VECTOR_DB.add(embeddings, cases_to_add)
 
     exported: List[Dict[str, Any]] = []
     for (fast_s, item), analysis in zip(top_scored, analysis_results):

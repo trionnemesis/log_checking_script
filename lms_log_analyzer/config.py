@@ -12,6 +12,8 @@ BASE_DIR = Path(os.getenv("LMS_HOME", Path(__file__).resolve().parent)).resolve(
 DATA_DIR = BASE_DIR / "data"
 LOG_STATE_FILE = DATA_DIR / "file_state.json"
 VECTOR_DB_PATH = DATA_DIR / "faiss.index"
+# 儲存每筆向量對應的歷史案例（包含原始日誌與分析結果）
+CASE_DB_PATH = DATA_DIR / "cases.json"
 
 # 日誌與輸出結果的路徑，預設位於 ``/var/log``，亦可透過環境變數覆寫。
 DEFAULT_TARGET_LOG_DIR = "/var/log/LMS_LOG"

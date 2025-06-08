@@ -5,7 +5,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import config
 
@@ -50,11 +50,14 @@ def embed(text: str) -> List[float]:
 class VectorIndex:
     """封裝 FAISS Index，負責載入、儲存與查詢"""
 
-    def __init__(self, path: Path, dimension: int) -> None:
+    def __init__(self, path: Path, cases_path: Path, dimension: int) -> None:
         self.path = path
+        self.cases_path = cases_path
         self.dimension = dimension
         self.index: Optional[faiss.Index] = None  # type: ignore
+        self.cases: List[Dict[str, Any]] = []
         self._load()
+        self._load_cases()
 
     def _load(self):
         """讀取既有索引檔，如無則建立新索引"""
@@ -72,8 +75,21 @@ class VectorIndex:
         else:
             self.index = faiss.IndexFlatL2(self.dimension)
 
+    def _load_cases(self):
+        """載入歷史案例"""
+
+        if self.cases_path.exists():
+            try:
+                import json
+
+                self.cases = json.loads(self.cases_path.read_text(encoding="utf-8"))
+                logger.info(f"Loaded cases from {self.cases_path}")
+            except Exception as e:  # pragma: no cover - optional
+                logger.error(f"Failed loading cases: {e}")
+                self.cases = []
+
     def save(self):
-        """將索引寫入磁碟"""
+        """將索引與案例寫入磁碟"""
 
         if faiss and self.index is not None:
             try:
@@ -81,6 +97,15 @@ class VectorIndex:
                 logger.info(f"Saved FAISS index to {self.path}")
             except Exception as e:
                 logger.error(f"Failed saving FAISS index: {e}")
+
+        try:
+            import json
+
+            self.cases_path.write_text(
+                json.dumps(self.cases, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as e:  # pragma: no cover - optional
+            logger.error(f"Failed saving cases file: {e}")
 
     def search(self, vec: List[float], k: int = 5) -> Tuple[List[int], List[float]]:
         """在索引中搜尋並回傳 (ids, 距離)"""
@@ -92,13 +117,20 @@ class VectorIndex:
         dists, ids = self.index.search(q, k)
         return ids[0].tolist(), dists[0].tolist()
 
-    def add(self, vecs: List[List[float]]):
-        """新增多個向量至索引"""
+    def add(self, vecs: List[List[float]], cases: List[Dict[str, Any]]):
+        """新增多個向量與對應案例至索引"""
 
         import numpy as np
+
         if faiss and self.index is not None:
             to_add = np.array(vecs, dtype=np.float32)
             self.index.add(to_add)
+        self.cases.extend(cases)
+
+    def get_cases(self, ids: List[int]) -> List[Dict[str, Any]]:
+        """根據索引 ID 取得案例資訊"""
+
+        return [self.cases[i] for i in ids if 0 <= i < len(self.cases)]
 
 
-VECTOR_DB = VectorIndex(config.VECTOR_DB_PATH, EMBED_DIM)
+VECTOR_DB = VectorIndex(config.VECTOR_DB_PATH, config.CASE_DB_PATH, EMBED_DIM)

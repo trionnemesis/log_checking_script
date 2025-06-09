@@ -317,3 +317,19 @@
 │ Exporter            │ ← 將分析結果輸出為 JSON
 │ JSON / Log Report   │
 └────────────────────┘
+
+## VIII. 進階腳本說明
+
+### lms_log_analyzer_v2.py
+- 以 Python 撰寫的進階日誌分析器，整合 FAISS 向量索引與 Gemini LLM。
+- 透過 `LMS_TARGET_LOG_DIR` 指定要掃描的日誌目錄，預設 `/var/log/LMS_LOG/`。
+- 先以 `fast_score()` 進行啟發式評分，再將高分樣本轉換為向量，比對已知攻擊與正常模式。
+- 新穎或與攻擊相似的日誌才會送往 Gemini 分析，降低成本。
+- 相關輸出與運維日誌分別寫入 `LMS_ANALYSIS_OUTPUT_FILE` 與 `LMS_OPERATIONAL_LOG_FILE`。
+
+### monitor_resources.sh
+- Bash 腳本，定期檢查 CPU、記憶體、IO Wait 及磁碟使用率。
+- 若資源過高，彙整異常摘要後呼叫 Gemini API，請求是否需要重啟服務。
+- 需要 `jq` 與 `curl`，並在腳本或環境變數設定 `GEMINI_API_KEY`。
+- 執行結果與 API 回應寫入 `/var/log/server_monitor_gemini.log`。
+

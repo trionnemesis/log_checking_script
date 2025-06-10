@@ -50,7 +50,8 @@
 - **虛擬環境 (Virtual Environment - 強烈建議):**
     - 使用 `venv` 或 `conda` 建立獨立的 Python 環境，以避免套件版本衝突。
     - 例如：`python3 -m venv lms_ai_env`
-
+- **其他:monitor_resources.sh 為替代腳本可以設定到crontab:**
+    - monitor_resources.sh
 ---
 
 ## III. 安裝步驟與說明

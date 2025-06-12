@@ -1,6 +1,0 @@
-faiss-cpu
-langchain-google-genai
-langchain-core
-sentence-transformers
-google-api-python-client
-requests

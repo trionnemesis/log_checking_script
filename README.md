@@ -14,34 +14,30 @@
 
 ## I. 系統架構 (概念流程)
 
-1. **Filebeat 近即時輸入：** Filebeat 監控日誌並將新行透過 HTTP 傳送至 `filebeat_server.py`，立即觸發後續分析。
-2. **批次日誌處理：** 亦可定期執行 `main.py`，程式會根據 `data/file_state.json` 記錄的偏移量只讀取新增內容。
-3. **Wazuh 告警比對：** 每行先送至 Wazuh `logtest` API，僅保留產生告警的項目並取得告警 JSON。
-4. **啟發式評分與取樣：** 對告警行以 `fast_score()` 計算分數，挑選最高分的前 `SAMPLE_TOP_PERCENT`％ 作為候選。
-5. **向量嵌入與歷史比對：** 將候選日誌嵌入向量並寫入 FAISS 索引，以便搜尋過往相似模式。
-6. **LLM 深度分析：** 把 Wazuh 告警 JSON 傳入 `llm_analyse()` 由 Gemini 分析是否為攻擊行為並回傳結構化結果。
-7. **結果輸出與成本控制：** 將分析結果寫入 `analysis_results.json`，同時更新向量索引、狀態檔並追蹤 LLM Token 成本。
+1. **週期性執行:** 透過 cron job (或其他排程方式) 每小時觸發一次腳本。
+2. **日誌讀取與選擇:**
+    - 掃描指定的日誌目錄 (例如 `/var/log/LMS_LOG/`)。
+    - 找到其中最新修改的 `.log` 檔案作為當前處理目標。
+    - 若無 `.log` 檔案，則會嘗試在該目錄下產生一個模擬日誌檔 (`simulated_lms_activity.log`) 供測試。
+    - 使用時間戳檔案 (`/tmp/lms_last_run_log_timestamp.txt`) 記錄上次處理到的日誌行時間，以實現增量處理。
+3. **初步過濾:**
+    - **解析器 (Parser):** 解析每一行日誌。
+    - **啟發式規則 (Heuristics):** 根據預設規則 (如非 2xx/3xx 狀態碼、過長的回應時間、可疑關鍵字等) 快速篩選。
+4. **向量搜尋 (模擬):**
+    - 通過啟發式規則的日誌，會進行模擬的攻擊向量和正常向量比對。
+    - **Attack-vec search:** 若與攻擊向量相似度高於閾值，標記為可疑。
+    - **Normal-vec search:** 若與正常向量相似度低於閾值，也標記為可疑。
+    - 若兩者皆未命中，則丟棄。
+5. **LLM 深度分析 (Gemini via LangChain):**
+    - 被標記為可疑的樣本列表，會透過 LangChain 框架提交給 Gemini 模型進行分析。
+    - Gemini 回傳 JSON 格式的分析結果 (是否攻擊、攻擊類型、原因、嚴重性)。
+6. **結果記錄與通知:**
+    - **AI 告警日誌:** Gemini 的分析結果、Token 消耗、費用等資訊記錄到 `/tmp/LMS_AI_ALERTS/LMS_AI_ALERT_YYYYMMDD.log`。
+    - **Token 使用日誌:** API Token 使用量記錄到 `/tmp/LMS_TOKEN_USAGE/LMS_TOKEN_USAGE.log`。
+    - **成本控制:** 若 API 累計費用超過設定上限 (預設 5 USD)，則停止呼叫 Gemini 並記錄。
+    - **郵件通知 (模擬):** 對於偵測到的告警或費用超限情況，模擬發送郵件。
 
 ---
-
-## 專案目錄結構
-
-```text
-lms_log_analyzer/
-├── main.py
-├── config.py
-├── requirements.txt
-├── src/
-│   ├── log_processor.py
-│   ├── log_parser.py
-│   ├── llm_handler.py
-│   ├── vector_db.py
-│   ├── utils.py
-│   ├── wazuh_api.py
-│   └── filebeat_server.py
-├── data/
-└── logs/
-```
 
 ## II. 建議安裝環境
 
@@ -103,19 +99,49 @@ lms_log_analyzer/
     - 在已啟動的虛擬環境中，執行以下指令安裝必要的 Python 函式庫：
         
         ```bash
-        pip install -r lms_log_analyzer/requirements.txt
+        pip install langchain langchain-google-genai google-api-python-client
+        
         ```
         
     - **套件說明:**
         - `langchain`: LangChain 核心函式庫，提供與 LLM 互動的框架。
         - `langchain-google-genai`: LangChain 專用於整合 Google Generative AI (包括 Gemini 模型) 的套件。
         - `google-api-python-client`: Google API 的 Python 客戶端函式庫，`langchain-google-genai` 可能會依賴它。
-4. **取得並設定程式:**
-    - 下載或 clone 此專案，確保 `lms_log_analyzer` 目錄與上方目錄結構相符。
+4. **取得並設定腳本:**
+    - 將提供的 Python 腳本儲存為一個 `.py` 檔案 (例如：`lms_log_analyzer.py`)。
     - **設定 API 金鑰:**
-        - 建議在環境變數 `GEMINI_API_KEY` 中指定，避免將金鑰寫死在程式碼中。
-    - **調整設定值:**
-        - 所有設定集中於 `lms_log_analyzer/config.py`，也可透過對應環境變數覆寫，如 `LMS_TARGET_LOG_DIR` 等。
+        - **建議方式 (環境變數):** 在您的終端機設定環境變數 `GEMINI_API_KEY`。
+        (若要永久生效，請將此行加入您的 shell 設定檔，如 `.bashrc`, `.zshrc` 等)
+            
+            ```bash
+            export GEMINI_API_KEY="YOUR_API_KEY_HERE"
+            
+            ```
+            
+        - **腳本內提示輸入:** 如果未設定環境變數，腳本在執行時會提示您輸入 API 金鑰。
+        - **直接寫入腳本 (不建議用於生產環境):** 您也可以直接在腳本中修改 `GEMINI_API_KEY = "YOUR_API_KEY_HERE"`，但請注意安全風險。
+    - **檢查並調整腳本內的「配置設定 (Configurable Settings)」部分:**
+        
+        ```python
+        # --- 配置設定 (Configurable Settings) ---
+        SIM_T_ATTACK_THRESHOLD = 0.8
+        SIM_N_NORMAL_THRESHOLD = 0.6
+        GEMINI_API_CALL_ENABLED = True
+        GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") # 金鑰設定點
+        
+        MAX_HOURLY_COST_USD = 5.0
+        LOG_DIRECTORY = "/var/log/LMS_LOG/" # 主要日誌目錄
+        MOCK_LOG_FILENAME_IN_DIR = "simulated_lms_activity.log" # 若目錄為空，產生的模擬檔名
+        
+        AI_ALERT_LOG_DIR = "/tmp/LMS_AI_ALERTS/" # AI 告警日誌存放目錄
+        TOKEN_USAGE_LOG_DIR = "/tmp/LMS_TOKEN_USAGE/" # Token 使用量日誌存放目錄
+        LAST_RUN_TIMESTAMP_FILE = "/tmp/lms_last_run_log_timestamp.txt" # 上次執行時間戳檔案
+        # ... 其他設定 ...
+        
+        ```
+        
+        - 確認 `LOG_DIRECTORY` 指向您正確的日誌來源目錄。
+        - `AI_ALERT_LOG_DIR`, `TOKEN_USAGE_LOG_DIR`, `LAST_RUN_TIMESTAMP_FILE` 預設使用 `/tmp/` 路徑，通常有較好的權限相容性。若需更改，請確保執行腳本的使用者對新路徑有寫入權限。
 5. **目錄與檔案權限 (Directory & File Permissions):**
     - **讀取日誌:** 執行腳本的使用者必須擁有對 `LOG_DIRECTORY` 及其內部日誌檔案的**讀取**權限。
         
@@ -127,7 +153,9 @@ lms_log_analyzer/
         
         ```
         
-    - **寫入輸出檔案:** 執行腳本的使用者需能寫入 `LMS_ANALYSIS_OUTPUT_FILE` 及 `data/` 目錄，程式才能儲存分析結果與狀態檔。
+    - **寫入輸出檔案:** 執行腳本的使用者必須擁有對 `AI_ALERT_LOG_DIR`, `TOKEN_USAGE_LOG_DIR` 以及 `LAST_RUN_TIMESTAMP_FILE` 所在目錄的**寫入**權限，以便腳本可以建立和寫入這些日誌/狀態檔案。
+        - 如果這些目錄 (如 `/tmp/LMS_AI_ALERTS/`) 不存在，腳本會嘗試創建它們。
+    - **模擬日誌產生:** 如果 `LOG_DIRECTORY` 中沒有 `.log` 檔案，腳本會嘗試在 `LOG_DIRECTORY` 中創建 `MOCK_LOG_FILENAME_IN_DIR`。這種情況下，執行腳本的使用者也需要對 `LOG_DIRECTORY` 的**寫入**權限。
 
 ---
 
@@ -140,57 +168,46 @@ lms_log_analyzer/
     
     ```
     
-2. **執行程式:**
-
+2. **執行腳本:**
+(將 `lms_log_analyzer.py` 替換為您儲存腳本的實際檔名)
+    
     ```bash
-    python lms_log_analyzer/main.py
-
-    ```
-
-    若要以近即時方式搭配 Filebeat，啟動以下伺服器：
-
-    ```bash
-    python -m lms_log_analyzer.src.filebeat_server
+    python lms_log_analyzer.py
+    
     ```
     
 3. **腳本運作流程簡述:**
-    - 腳本啟動並載入 `config.py` 設定。
-    - 掃描 `LMS_TARGET_LOG_DIR` 取得最新的 `.log` 檔案。
-    - 從 `data/file_state.json` 取得先前處理的偏移量，只讀取新增的日誌行。
-    - 透過 Wazuh 檢查告警、計算啟發式分數並建立向量索引。
-    - 將產生告警的日誌交由 Gemini 分析，取得結構化結果並統計 Token 成本。
-    - 儲存分析輸出與最新偏移量，以便下次執行接續處理。
+    - 腳本啟動，讀取設定。
+    - 掃描 `LOG_DIRECTORY`，選取最新的 `.log` 檔案 (或產生模擬檔案)。
+    - 讀取 `LAST_RUN_TIMESTAMP_FILE` 中的時間戳。
+    - 從選定的日誌檔案中讀取並處理在該時間戳之後的新增日誌行。
+    - 進行啟發式過濾和模擬的向量搜尋。
+    - 將可疑日誌提交給 Gemini 分析。
+    - 記錄分析結果、Token 用量。
+    - 模擬發送告警郵件。
+    - 更新 `LAST_RUN_TIMESTAMP_FILE` 中的時間戳。
 4. **預期輸出檔案位置 (預設):**
-    - 分析結果: `/var/log/analyzer_results.json`
-
-5. **Filebeat 範例設定:** 以下是一個簡易的 Filebeat `output.http` 範例，會將日誌傳送至本程式的伺服器：
-
-    ```yaml
-    filebeat.inputs:
-      - type: log
-        paths: ["/var/log/LMS_LOG/*.log"]
-
-    output.http:
-      url: "http://localhost:9000/"
-      method: POST
-      headers:
-        Content-Type: application/json
-      format: json
-      batch_publish: true
-    ```
+    - AI 告警: `/tmp/LMS_AI_ALERTS/LMS_AI_ALERT_YYYYMMDD.log`
+    - Token 用量: `/tmp/LMS_TOKEN_USAGE/LMS_TOKEN_USAGE.log`
+    - 下次執行時間戳: `/tmp/lms_last_run_log_timestamp.txt`
 
 ---
 
 ## V. 腳本設定詳解 (Configurable Settings)
 
-所有可自訂的參數都集中在 `lms_log_analyzer/config.py` 中，也可透過環境變數覆寫。
-常見的設定包含：
+在 Python 腳本的開頭，「配置設定」區域包含以下重要變數，您可以根據需求調整：
 
-- `LMS_TARGET_LOG_DIR`：要掃描的日誌目錄。
-- `LMS_ANALYSIS_OUTPUT_FILE`：分析結果輸出的 JSON 路徑。
-- `CACHE_SIZE`、`SAMPLE_TOP_PERCENT`：控制快取大小與取樣比例。
-- `MAX_HOURLY_COST_USD`：每小時允許的 LLM 費用上限。
-- `GEMINI_API_KEY`：Gemini API 金鑰，可透過環境變數提供。
+- `SIM_T_ATTACK_THRESHOLD = 0.8`: 攻擊向量搜尋的相似度閾值，高於此值視為潛在攻擊。
+- `SIM_N_NORMAL_THRESHOLD = 0.6`: 正常向量搜尋的相似度閾值，*低於*此值視為行為異常。
+- `GEMINI_API_CALL_ENABLED = True`: 是否真的呼叫 Gemini API。設為 `False` 可在不產生費用的情況下測試腳本的其他部分邏輯 (API 呼叫會被模擬)。
+- `GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")`: Gemini API 金鑰。優先從環境變數讀取。
+- `MAX_HOURLY_COST_USD = 5.0`: 每小時 Gemini API 呼叫的費用上限 (美元)。達到此上限後，腳本將在本小時內停止呼叫 API。
+- `LOG_DIRECTORY = "/var/log/LMS_LOG/"`: 指定存放原始日誌檔案的目錄。腳本會掃描此目錄下的 `.log` 檔案。
+- `MOCK_LOG_FILENAME_IN_DIR = "simulated_lms_activity.log"`: 如果 `LOG_DIRECTORY` 中沒有找到任何 `.log` 檔案，腳本會嘗試在此目錄下創建以此命名的模擬日誌檔案。
+- `AI_ALERT_LOG_DIR = "/tmp/LMS_AI_ALERTS/"`: 存放 AI 分析告警結果的目錄。
+- `TOKEN_USAGE_LOG_DIR = "/tmp/LMS_TOKEN_USAGE/"`: 存放 API Token 使用量記錄的目錄。
+- `LAST_RUN_TIMESTAMP_FILE = "/tmp/lms_last_run_log_timestamp.txt"`: 記錄上次成功處理的日誌行時間戳的檔案路徑，用於增量處理。
+- `PRICE_PER_1000_TOKENS_INPUT` 和 `PRICE_PER_1000_TOKENS_OUTPUT`: 用於估算 Gemini API 費用的單價 (美元/千 Token)。**請參考最新的 Google Cloud 定價進行調整。**
 
 ---
 
@@ -242,7 +259,7 @@ lms_log_analyzer/
     - **解決:**
         - 檢查並修正相關目錄和檔案的權限 (`ls -l`, `chmod`, `chown`)。
         - 確保以擁有正確權限的使用者執行腳本。
-        - 將 `LMS_ANALYSIS_OUTPUT_FILE` 與 `data/` 目錄等輸出路徑設置到使用者具寫入權限的位置 (如 `/tmp/` 或家目錄下的子目錄)。
+        - 將輸出路徑 (如 `AI_ALERT_LOG_DIR`, `LAST_RUN_TIMESTAMP_FILE`) 設定到使用者有權限寫入的位置 (如 `/tmp/` 或使用者家目錄下的子目錄)。
 - **`[Errno 21] Is a directory`**
     - **原因:** 腳本試圖將一個目錄當作檔案來開啟。通常是因為 `LOG_DIRECTORY` 被錯誤地當作完整檔案路徑傳遞給了 `open()` 函數。
     - **解決:** 確保腳本中的路徑變數 (尤其是傳給 `open()` 的) 指向的是檔案而不是目錄。在此腳本的最新版本中，應檢查 `get_latest_log_file` 是否正確返回檔案路徑。
@@ -263,23 +280,12 @@ lms_log_analyzer/
 ┌────────────┐
 │ Log Source │   ← 來自 LMS 系統的 .log/.gz/.bz2 檔案
 └────┬───────┘
-│            
-▼             
-┌──────────────┐
-│  Filebeat    │ ← 監控日誌並透過 HTTP 送出
-└────┬─────────┘
 │
 ▼
 ┌────────────┐
 │  Parser    │ ← 逐行讀取新日誌、解壓縮、處理編碼
 │ tail_since │
 └────┬───────┘
-│
-▼
-┌──────────────┐
-│ Wazuh Filter │ ← 調用 Wazuh logtest 檢查是否產生告警
-│ filter_logs()│
-└────┬─────────┘
 │
 ▼
 ┌──────────────┐
@@ -299,7 +305,7 @@ lms_log_analyzer/
 ▼
 ┌────────────────────┐
 │ Gemini LLM (Langchain) │ ← 分析是否為攻擊行為
-│ llm_analyse()          │
+│ LLM_CHAIN.batch()      │
 └────────┬──────────────┘
 │
 ▼

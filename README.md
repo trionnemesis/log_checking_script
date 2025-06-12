@@ -275,7 +275,7 @@
     - **解決:** 修改 `read_incremental_logs` 中 `datetime.datetime.strptime(timestamp_str, "...")` 的格式字串，使其與您的實際日誌時間戳格式匹配。
 
 ---
-
+```
 架構圖
 ┌────────────┐
 │ Log Source │   ← 來自 LMS 系統的 .log/.gz/.bz2 檔案
@@ -318,3 +318,4 @@
 │ Exporter            │ ← 將分析結果輸出為 JSON
 │ JSON / Log Report   │
 └────────────────────┘
+```

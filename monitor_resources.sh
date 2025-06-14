@@ -2,6 +2,9 @@
 
 # === 全域設定 ===
 LOG_FILE="/var/log/server_monitor_gemini.log"
+# 狀態檔案與冷卻時間設定
+STATE_FILE="/tmp/monitor_last_alert.state"
+COOLDOWN_SECONDS=14400  # 4 小時
 # 🚨 重要：請替換成您的 API 金鑰，或從環境變數讀取。
 # 建議將 API 金鑰儲存在環境變數中，例如：
 # export GEMINI_API_KEY_ENVVAR="YOUR_API_KEY"
@@ -151,23 +154,50 @@ log_to_file_only "系統資訊收集完成：CPU=${CPU}%, RAM=${RAM_USAGE}%, IO_
 
 # === 本地 RAG 式異常分析 ===
 ANOMALY_REPORT=""
+# 紀錄目前異常類型，供狀態檔案使用
+ALERT_TYPE=""
 # 使用 bc 進行浮點數比較，並確保 bc 的輸入是有效的
 # bc 回傳 1 代表 true, 0 代表 false
 CPU_OVER_THRESHOLD=$(echo "${CPU:-0} > 80" | bc -l 2>/dev/null)
-[ "${CPU_OVER_THRESHOLD:-0}" -eq 1 ] && ANOMALY_REPORT+="CPU 使用率過高 (${CPU}%)\n"
+[ "${CPU_OVER_THRESHOLD:-0}" -eq 1 ] && {
+    ANOMALY_REPORT+="CPU 使用率過高 (${CPU}%)\n"
+    ALERT_TYPE+="CPU_HIGH;"
+}
 
-[ "$RAM_USAGE" -gt 85 ] && ANOMALY_REPORT+="記憶體使用率過高 (${RAM_USAGE}%)\n"
+[ "$RAM_USAGE" -gt 85 ] && {
+    ANOMALY_REPORT+="記憶體使用率過高 (${RAM_USAGE}%)\n"
+    ALERT_TYPE+="RAM_HIGH;"
+}
 
 IO_WAIT_OVER_THRESHOLD=$(echo "${IO_WAIT:-0} > 10" | bc -l 2>/dev/null)
-[ "${IO_WAIT_OVER_THRESHOLD:-0}" -eq 1 ] && ANOMALY_REPORT+="IO 等待過高 (${IO_WAIT}%)\n"
+[ "${IO_WAIT_OVER_THRESHOLD:-0}" -eq 1 ] && {
+    ANOMALY_REPORT+="IO 等待過高 (${IO_WAIT}%)\n"
+    ALERT_TYPE+="IO_WAIT_HIGH;"
+}
 
-[ "$DISK_PERCENT" -gt 85 ] && ANOMALY_REPORT+="磁碟使用率過高 (${DISK_USAGE_RAW})\n"
+[ "$DISK_PERCENT" -gt 85 ] && {
+    ANOMALY_REPORT+="磁碟使用率過高 (${DISK_USAGE_RAW})\n"
+    ALERT_TYPE+="DISK_HIGH;"
+}
 
 
 if [ -z "$ANOMALY_REPORT" ]; then
     log_message "系統狀態正常，略過分析。"
     echo "[+] 系統狀態正常，略過分析。"
+    # 系統恢復正常時清除狀態檔案
+    rm -f "$STATE_FILE"
     exit 0
+fi
+
+# === 狀態檔案檢查與冷卻邏輯 ===
+CURRENT_TIME=$(date +%s)
+if [ -f "$STATE_FILE" ]; then
+    IFS=':' read -r LAST_ALERT_TYPE LAST_ALERT_TIME < "$STATE_FILE"
+    if [ "$ALERT_TYPE" = "$LAST_ALERT_TYPE" ] && [ $((CURRENT_TIME - LAST_ALERT_TIME)) -lt $COOLDOWN_SECONDS ]; then
+        log_message "${ALERT_TYPE} 異常持續中，冷卻期內，本次跳過 LLM 分析。"
+        echo "${ALERT_TYPE} 異常持續中，冷卻期內，本次跳過 LLM 分析。"
+        exit 0
+    fi
 fi
 
 log_message "偵測到系統異常。"
@@ -259,6 +289,9 @@ else
     log_message "Gemini API 未明確建議重啟任何監控中的服務。"
     echo "Gemini API 未明確建議重啟任何監控中的服務。"
 fi
+
+# 將此次異常類型與時間寫入狀態檔案
+echo "${ALERT_TYPE}:$(date +%s)" > "$STATE_FILE"
 
 log_message "腳本執行完畢。"
 exit 0

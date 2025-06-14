@@ -69,7 +69,7 @@ LMS_ANALYSIS_OUTPUT_FILE = Path(os.getenv("LMS_ANALYSIS_OUTPUT_FILE", DEFAULT_AN
 LMS_OPERATIONAL_LOG_FILE = Path(os.getenv("LMS_OPERATIONAL_LOG_FILE", str(DEFAULT_OPERATIONAL_LOG_FILE)))
 
 CACHE_SIZE = int(os.getenv("LMS_CACHE_SIZE", 10_000))
-SAMPLE_TOP_PERCENT = int(os.getenv("LMS_SAMPLE_TOP_PERCENT", 20))
+SAMPLE_TOP_PERCENT = int(os.getenv("LMS_SAMPLE_TOP_PERCENT", 10))
 BATCH_SIZE = int(os.getenv("LMS_LLM_BATCH_SIZE", 10))
 MAX_HOURLY_COST_USD = float(os.getenv("LMS_MAX_HOURLY_COST_USD", 5.0)) #
 PRICE_IN_PER_1K_TOKENS = float(os.getenv("LMS_PRICE_IN_PER_1K_TOKENS", 0.000125))
@@ -380,8 +380,9 @@ def process_logs(log_paths: List[Path]):
     2. 快速打分並初步抽樣高分日誌。
     3. 對高分日誌進行向量化並更新向量索引。
     4. 【新增】執行向量過濾層，判斷哪些日誌是新穎的或與已知攻擊相似，以決定是否送交LLM。
-    5. 僅將過濾後的日誌送交 LLM 進行深度分析。
-    6. 彙整所有來源（LLM、向量過濾器）的分析結果並匯出。
+    5. 聚合相似事件，僅選代表日誌送往 LLM 分析。
+    6. 針對代表日誌呼叫 LLM，並將結果套用至同組日誌。
+    7. 彙整所有來源（LLM、向量過濾器）的分析結果並匯出。
     """
     # 1. 收集所有指定路徑的新日誌
     all_new_lines = [line for p in log_paths if p.is_file() for line in tail_since(p)]
@@ -443,15 +444,37 @@ def process_logs(log_paths: List[Path]):
         logger.warning("FAISS 索引不可用，將所有高分日誌送交 LLM 分析。")
         logs_for_llm_analysis = top_lines_content
 
-    # 5. LLM 分析 (僅分析被向量過濾器放行的日誌)
-    llm_analyses_map = {}
-    if GEMINI_ENABLED and LLM_CHAIN and logs_for_llm_analysis:
-        llm_results_list = llm_analyse(logs_for_llm_analysis)
-        for i, analysis_result in enumerate(llm_results_list):
-            if analysis_result: analysis_result["source"] = "LLM"
-            llm_analyses_map[logs_for_llm_analysis[i]] = analysis_result
+    # 5. 聚合相似事件，僅選代表日誌送往 LLM
+    representative_lines: List[str] = []
+    cluster_map: Dict[str, List[str]] = {}
+    if faiss and VECTOR_DB.index is not None and logs_for_llm_analysis:
+        for line in logs_for_llm_analysis:
+            ids, _ = VECTOR_DB.search(embed(line), k=1)
+            cluster_id = str(ids[0]) if ids else str(hash(line))
+            if cluster_id not in cluster_map:
+                cluster_map[cluster_id] = [line]
+                representative_lines.append(line)
+            else:
+                cluster_map[cluster_id].append(line)
+    else:
+        for idx, line in enumerate(logs_for_llm_analysis):
+            cid = str(idx)
+            cluster_map[cid] = [line]
+            representative_lines.append(line)
 
-    # 6. 彙整所有來源的結果並匯出
+    # 6. LLM 分析 (僅對代表日誌呼叫)
+    llm_analyses_map: Dict[str, Optional[dict]] = {}
+    if GEMINI_ENABLED and LLM_CHAIN and representative_lines:
+        llm_results_list = llm_analyse(representative_lines)
+        for rep_line, analysis_result in zip(representative_lines, llm_results_list):
+            if analysis_result:
+                analysis_result["source"] = "LLM"
+            for line_group in cluster_map.values():
+                if rep_line in line_group:
+                    for line in line_group:
+                        llm_analyses_map[line] = analysis_result
+
+    # 7. 彙整所有來源的結果並匯出
     exported_results: List[Dict[str, Any]] = []
     alerts_found = 0
     logger.info("=" * 30 + " 最終分析結果 " + "=" * 30)

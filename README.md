@@ -23,15 +23,19 @@
 3. **初步過濾:**
     - **解析器 (Parser):** 解析每一行日誌。
     - **啟發式規則 (Heuristics):** 根據預設規則 (如非 2xx/3xx 狀態碼、過長的回應時間、可疑關鍵字等) 快速篩選。
+    - 僅抽取得分最高約 10% 的日誌進入後續分析，以控制成本。
 4. **向量搜尋 (模擬):**
     - 通過啟發式規則的日誌，會進行模擬的攻擊向量和正常向量比對。
     - **Attack-vec search:** 若與攻擊向量相似度高於閾值，標記為可疑。
     - **Normal-vec search:** 若與正常向量相似度低於閾值，也標記為可疑。
     - 若兩者皆未命中，則丟棄。
-5. **LLM 深度分析 (Gemini via LangChain):**
-    - 被標記為可疑的樣本列表，會透過 LangChain 框架提交給 Gemini 模型進行分析。
-    - Gemini 回傳 JSON 格式的分析結果 (是否攻擊、攻擊類型、原因、嚴重性)。
-6. **結果記錄與通知:**
+5. **向量過濾與事件聚合:**
+    - 基於向量距離判斷日誌是否與已知模式相符，新穎或高相似者才會送交 LLM。
+    - 搜尋最近鄰並將相同鄰居的日誌歸為同一群組，只挑選代表樣本分析。
+6. **LLM 深度分析 (Gemini via LangChain):**
+    - 將每個分組的代表日誌透過 LangChain 提交給 Gemini 模型。
+    - Gemini 回傳 JSON 格式的分析結果，並套用到同組內的其他日誌。
+7. **結果記錄與通知:**
     - **AI 告警日誌:** Gemini 的分析結果、Token 消耗、費用等資訊記錄到 `/tmp/LMS_AI_ALERTS/LMS_AI_ALERT_YYYYMMDD.log`。
     - **Token 使用日誌:** API Token 使用量記錄到 `/tmp/LMS_TOKEN_USAGE/LMS_TOKEN_USAGE.log`。
     - **成本控制:** 若 API 累計費用超過設定上限 (預設 5 USD)，則停止呼叫 Gemini 並記錄。
@@ -51,7 +55,7 @@
     - 使用 `venv` 或 `conda` 建立獨立的 Python 環境，以避免套件版本衝突。
     - 例如：`python3 -m venv lms_ai_env`
 - **其他:monitor_resources.sh 為替代腳本可以設定到crontab:**
-    - monitor_resources.sh
+    - monitor_resources.sh （含狀態檔與冷卻機制，避免重複呼叫 API）
 ---
 
 ## III. 安裝步驟與說明
@@ -292,7 +296,7 @@
 │ Fast Scorer  │ ← 啟發式快速評分
 │ fast_score() │
 └────┬─────────┘
-│top X%
+│top 10%
 ▼
 ┌────────────────────┐
 │ Vector Embedder     │ ← 用 sentence-transformers 或 SHA256 偽向量
@@ -303,6 +307,11 @@
 │───────────────▶│ search(), add()    │
 └────────────────────┘
 ▼
+┌────────────────────┐
+│ Cluster Similar    │ ← 聚合相似事件
+│ Logs               │
+└────────┬───────────┘
+         ▼
 ┌────────────────────┐
 │ Gemini LLM (Langchain) │ ← 分析是否為攻擊行為
 │ LLM_CHAIN.batch()      │
@@ -319,3 +328,15 @@
 │ JSON / Log Report   │
 └────────────────────┘
 ```
+
+## VIII. 自動化測試
+
+專案內附帶 `test_analyzer.py`，使用 pytest 執行基本單元測試。
+
+在專案根目錄下執行：
+
+```bash
+pytest
+```
+
+GitHub Actions 會在 Pull Request 時自動執行這些測試。

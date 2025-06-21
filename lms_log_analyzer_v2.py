@@ -10,6 +10,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import time
 import logging
@@ -313,6 +314,26 @@ def tail_since(path: Path, max_lines: int = MAX_LINES_PER_RUN) -> List[str]:
     STATE[file_key] = stored
     return new_lines
 
+def parse_status(line: str) -> int:
+    """從標準的 Apache/Nginx 日誌格式中提取 HTTP 狀態碼"""
+    match = re.search(r'"[^"]*"\s+(\d{3})\b', line)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    return 0
+
+def response_time(line: str) -> float:
+    """從包含 resp_time:數字 格式的行中提取響應時間"""
+    match = re.search(r'resp_time:(\d+(?:\.\d+)?)', line)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
+    return 0.0
+
 # ────────────────────────────
 # 優化的快速評分
 # ────────────────────────────
@@ -520,8 +541,12 @@ def process_logs_optimized(log_paths: List[Path]) -> List[Dict[str, Any]]:
     logger.warning(f"發現 {alerts} 個潜在攻擊")
     save_state(STATE)
     VECTOR_DB.save()
-    
+
     return exported_results
+
+def process_logs(log_paths: List[Path]) -> List[Dict[str, Any]]:
+    """接受文件路徑列表並返回處理結果"""
+    return process_logs_optimized(log_paths)
 
 # ────────────────────────────
 # 主執行入口
